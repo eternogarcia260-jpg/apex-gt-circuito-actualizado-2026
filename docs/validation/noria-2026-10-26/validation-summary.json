@@ -1,0 +1,18 @@
+{
+  "circuit": "singapore_marina",
+  "placement": {"x": -100, "y": 0, "z": -40, "yaw": 0, "seaLevel": -1.25, "safetyRadius": 33},
+  "layout": {"valid": true, "insideTrack": true, "centrelineDistance": 128.10296420275543, "clearWaterBeyondRoadbed": 82.60296420275543, "minimumVesselGap": 168.23301172724058, "nearestVessel": "R12"},
+  "model": {"radius": 28.7, "axleHeight": 35.2, "cabins": 32, "angularSpeed": 0.035, "foundationPiles": 4, "meshes": 26, "uniqueGeometries": 26, "uniqueMaterials": 12, "logicalTriangles": 511672, "extraLights": 0, "extraRenderLoops": 0, "extraReflectionCameras": 0, "physicsBodies": 0, "lodOrDecimation": false},
+  "tests": {"typecheck": "passed", "build": "passed", "terrainRegression": "passed", "maritimeRegression": "passed", "ferrisLayout": "passed", "ferrisModel": "passed", "idempotentDeduplicatedDisposal": "passed", "sourceExtractionReproducible": true},
+  "coverage": {"lines": 99.64, "branches": 94.41, "functions": 100},
+  "captures": {
+    "time": 8, "dpr": 1, "viewport": [1280, 649], "comparisonOrder": "before above, after below", "retouching": false,
+    "oblique": {"position": [-15, 57, 90], "target": [-100, 29, -40], "fov": 46, "before": {"calls": 184, "triangles": 7952042, "geometries": 783, "textures": 185}, "after": {"calls": 254, "triangles": 9169138, "geometries": 809, "textures": 187}},
+    "track": {"position": [-38.161030874, 2.15, -152.188730873], "target": [-100, 29, -40], "fov": 46, "before": {"calls": 133, "triangles": 3998614, "geometries": 774, "textures": 187}, "after": {"calls": 203, "triangles": 5201310, "geometries": 800, "textures": 189}}
+  },
+  "console": {"modelOrShaderErrorsObserved": 0, "nonBlockingExistingIssue": "Vite HMR websocket connection fails through the forwarded preview URL; manual reload was used"},
+  "buildWarnings": ["Existing application bundle exceeds Vite's 500 kB chunk warning threshold"],
+  "performanceNote": "Renderer counters include main, reflection and shadow passes; no device FPS guarantee is made",
+  "sourceSHA256": "6b70cdcef42df3f3c892ad9481cf3cf3a5271b0df2633f6846aa3368c80b8f70",
+  "prototypeSHA256": "4e451a9a22abfb9938945a1493745df4ff50c9b430c69db9f4a175d6f7743609"
+}

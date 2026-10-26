@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#061520">
+<title>PELAGIC — Cinematic Ocean</title>
+<style>
+  :root { color-scheme: dark; --glass:rgba(6,17,27,.56); --edge:rgba(203,230,238,.16); --text:#e9f4f6; --muted:#93abb5; --accent:#77d6d0; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#05131e; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--text); }
+  #stage { position:fixed; inset:0; overflow:hidden; background:linear-gradient(#193b50,#c17b55 47%,#0a3545 50%,#041822 100%); }
+  #stage canvas { display:block; width:100%; height:100%; outline:none; touch-action:none; }
+  .vignette { pointer-events:none; position:absolute; inset:0; background:linear-gradient(180deg,rgba(2,10,18,.24),transparent 22%,transparent 63%,rgba(1,8,14,.22)),radial-gradient(ellipse at 50% 48%,transparent 45%,rgba(0,7,14,.25) 100%); }
+  .topline { position:absolute; left:clamp(14px,3vw,42px); top:clamp(14px,3vh,34px); display:flex; gap:12px; align-items:center; pointer-events:none; }
+  .mark { width:39px;height:39px;border:1px solid rgba(153,226,225,.58);border-radius:12px;display:grid;place-items:center;background:rgba(5,23,33,.42);box-shadow:0 5px 25px #0002; }
+  .mark svg { width:25px;height:25px; }
+  .brand { font-size:12px; letter-spacing:.24em; font-weight:760; line-height:1.35; }
+  .subbrand { color:rgba(222,241,244,.63);font-size:9px;letter-spacing:.17em;margin-top:4px; }
+  .status { position:absolute; right:clamp(14px,3vw,42px);top:clamp(17px,3.2vh,36px); display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--edge);border-radius:100px;background:rgba(3,16,26,.38);backdrop-filter:blur(16px);font-size:10px;letter-spacing:.1em;color:#cfdee2; }
+  .dot { width:6px;height:6px;border-radius:50%;background:#7ce0c6;box-shadow:0 0 12px #7ce0c699; }
+  .right-bottom { position:absolute;right:clamp(15px,3vw,42px);bottom:clamp(20px,4vh,45px);text-align:right;pointer-events:none; }
+  .fps { font-size:18px;font-variant-numeric:tabular-nums;font-weight:620;letter-spacing:-.03em;text-shadow:0 2px 15px #001; }
+  .fps small { font-size:9px;letter-spacing:.16em;color:#b7cbd0;font-weight:500; }
+  .caption { color:rgba(221,235,238,.62);font-size:9px;letter-spacing:.12em;margin-top:6px; }
+  .bottom-center { position:absolute;bottom:clamp(18px,4vh,44px);left:50%;transform:translateX(-50%);font-size:9px;letter-spacing:.13em;color:rgba(225,240,242,.48);pointer-events:none;white-space:nowrap;text-shadow:0 2px 10px #001; }
+  @media(max-width:600px) { .bottom-center { display:none; } .right-bottom { bottom:14px;right:15px; } .fps { font-size:15px; } .status { font-size:9px;padding:8px 10px; } .topline { top:14px;left:14px; } .mark { width:34px;height:34px; } }
+</style>
+</head>
+<body>
+<div id="stage" aria-label="Mar abierto animado"></div>
+<div class="vignette"></div>
+<div class="topline">
+  <div class="mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M3 11.5C7.4 8.3 11.8 8.3 16.2 11.5C20.5 14.7 24.7 14.7 29 11.5M3 17C7.4 13.8 11.8 13.8 16.2 17C20.5 20.2 24.7 20.2 29 17M3 22.5C7.4 19.3 11.8 19.3 16.2 22.5C20.5 25.7 24.7 25.7 29 22.5" stroke="#9BE4DF" stroke-width="1.5" stroke-linecap="round"/><circle cx="23.2" cy="5.3" r="2" fill="#E9C49B"/></svg></div>
+  <div><div class="brand">PELAGIC<span style="color:#80d6d0"> / </span>OCEAN</div><div class="subbrand">REAL-TIME WATER STUDY · 01</div></div>
+</div>
+<div class="status"><span class="dot" id="statusDot"></span><span id="statusText">PREPARANDO OCÉANO</span></div>
+<div class="right-bottom"><div class="fps"><span id="fpsValue">—</span> <small>FPS</small></div><div class="caption" id="renderMode">OLEAJE MEDIO · CALIDAD ADAPTATIVA</div></div>
+<div class="bottom-center">MAREA MEDIA · LUZ ATMOSFÉRICA · OCÉANO PROCEDURAL</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+  }
+}
+</script>
+<script>
+(() => {
+  const stage = document.getElementById('stage');
+  const statusText = document.getElementById('statusText');
+  const statusDot = document.getElementById('statusDot');
+  const fpsValue = document.getElementById('fpsValue');
+  const renderMode = document.getElementById('renderMode');
+  // Fixed ocean preset: moderate, visible swell without aggressive breaking waves.
+  const settings = Object.freeze({ wind: .78, waves: .84, foam: .62 });
+  const defaultView = { yaw: 0, pitch: -.09, height: 4.0, z: 13.5 };
+  let view = {...defaultView};
+  let engine = null;
+  let currentFps = 60;
+  let lastFrame = performance.now(), sampleElapsed = 0, sampleFrames = 0;
+  let slowSeconds = 0, fastSeconds = 0;
+  let quality = 'auto';
+  function updateFps(dt) {
+    sampleElapsed += dt; sampleFrames++;
+    if (sampleElapsed >= .5) {
+      currentFps = sampleFrames / sampleElapsed;
+      fpsValue.textContent = Math.round(currentFps).toString();
+      if (quality === 'auto' && engine && engine.setDpr) {
+        if (currentFps < 44) { slowSeconds += sampleElapsed; fastSeconds = 0; }
+        else if (currentFps > 58) { fastSeconds += sampleElapsed; slowSeconds = 0; }
+        else { slowSeconds = Math.max(0, slowSeconds - sampleElapsed * .5); fastSeconds = 0; }
+        if (slowSeconds >= 2.2) { engine.setDpr(Math.max(.85, engine.dpr - .12)); slowSeconds = 0; }
+        if (fastSeconds >= 6 && engine.dpr < engine.maxDpr) { engine.setDpr(Math.min(engine.maxDpr, engine.dpr + .08)); fastSeconds = 0; }
+      }
+      sampleElapsed = 0; sampleFrames = 0;
+    }
+  }
+  function onPointerControls(canvas, applyView) {
+    let pointer = null, px = 0, py = 0, pinchDistance = 0;
+    const pointers = new Map();
+    canvas.addEventListener('pointerdown', e => {
+      pointers.set(e.pointerId, {x:e.clientX,y:e.clientY});
+      if (pointers.size === 1) { pointer=e.pointerId; px=e.clientX; py=e.clientY; }
+      if (pointers.size === 2) { const a=[...pointers.values()]; pinchDistance=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y); pointer=null; }
+      canvas.setPointerCapture?.(e.pointerId);
+    });
+    canvas.addEventListener('pointermove', e => {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      if (pointers.size===1 && pointer===e.pointerId) {
+        view.yaw -= (e.clientX-px)*.0038; view.pitch += (e.clientY-py)*.0026;
+        view.pitch=Math.max(-.42,Math.min(.11,view.pitch)); px=e.clientX; py=e.clientY; applyView();
+      } else if (pointers.size===2) {
+        const a=[...pointers.values()], next=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y);
+        if (pinchDistance>0) { const delta=(pinchDistance-next)*.018; view.height=Math.max(2.6,Math.min(8.5,view.height+delta)); view.z=13.5+(view.height-4.0)*1.05; applyView(); }
+        pinchDistance=next;
+      }
+    });
+    const end = e => { pointers.delete(e.pointerId); if(pointer===e.pointerId) pointer=null; if(pointers.size<2) pinchDistance=0; };
+    canvas.addEventListener('pointerup',end); canvas.addEventListener('pointercancel',end); canvas.addEventListener('lostpointercapture',end);
+    canvas.addEventListener('wheel',e=>{ e.preventDefault(); view.height=Math.max(2.6,Math.min(8.5,view.height+Math.sign(e.deltaY)*.45)); view.z=13.5+(view.height-4.0)*1.05; applyView(); },{passive:false});
+  }
+
+  async function loadThree() {
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Tiempo de espera agotado al cargar Three.js')), 12000));
+    const modules = await Promise.race([
+      Promise.all([
+        import('three'),
+        import('three/addons/objects/Water.js'),
+        import('three/addons/objects/Sky.js')
+      ]),
+      timeout
+    ]);
+    return { THREE: modules[0], Water: modules[1].Water, Sky: modules[2].Sky };
+  }
+  async function init() {
+    statusText.textContent = 'CARGANDO THREE.JS';
+    try { initThree(await loadThree()); }
+    catch (error) { console.warn('Three.js no disponible; se activa el renderizador WebGL de compatibilidad.', error); initFallback(); }
+  }
+
+  function createWaterNormals(THREE, size = 256) {
+    // Seamless fractal height field: smooth periodic noise breaks the tiled, synthetic look
+    // of a stack of regular sine waves without needing an external texture.
+    let seed = 0x51f15e;
+    const random = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    const grids = [
+      { w: 4, h: 3, a: .38 },
+      { w: 9, h: 6, a: .27 },
+      { w: 18, h: 13, a: .17 },
+      { w: 35, h: 25, a: .11 },
+      { w: 67, h: 43, a: .07 }
+    ].map(g => {
+      g.data = new Float32Array(g.w * g.h);
+      for (let i = 0; i < g.data.length; i++) g.data[i] = random();
+      return g;
+    });
+    const smooth01 = x => x * x * (3 - 2 * x);
+    function gridNoise(g, u, v) {
+      u -= Math.floor(u); v -= Math.floor(v);
+      const x = u * g.w, y = v * g.h;
+      const ix = Math.floor(x), iy = Math.floor(y);
+      const fx = smooth01(x - ix), fy = smooth01(y - iy);
+      const ix1 = (ix + 1) % g.w, iy1 = (iy + 1) % g.h;
+      const ix0 = ix % g.w, iy0 = iy % g.h;
+      const a = g.data[iy0 * g.w + ix0], b = g.data[iy0 * g.w + ix1];
+      const c = g.data[iy1 * g.w + ix0], d = g.data[iy1 * g.w + ix1];
+      return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy;
+    }
+    function heightField(u, v) {
+      let value = 0;
+      for (const g of grids) value += g.a * gridNoise(g, u, v);
+      return value;
+    }
+    const data = new Uint8Array(size * size * 4);
+    const du = 1 / size;
+    for (let y = 0; y < size; y++) {
+      const v = y / size;
+      for (let x = 0; x < size; x++) {
+        const u = x / size;
+        const dx = (heightField(u + du, v) - heightField(u - du, v)) / (2 * du);
+        const dy = (heightField(u, v + du) - heightField(u, v - du)) / (2 * du);
+        let nx = -dx * .075, ny = -dy * .075, nz = 1;
+        const inv = 1 / Math.hypot(nx, ny, nz); nx *= inv; ny *= inv; nz *= inv;
+        const i = (y * size + x) * 4;
+        data[i] = Math.round((nx * .5 + .5) * 255);
+        data[i + 1] = Math.round((ny * .5 + .5) * 255);
+        data[i + 2] = Math.round((nz * .5 + .5) * 255);
+        data[i + 3] = 255;
+      }
+    }
+    const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
+    texture.colorSpace = THREE.NoColorSpace;
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  function createCloudNoiseTexture(THREE, width = 512, height = 256) {
+    // Build a tileable multi-scale noise atlas once on the CPU. Sampling this texture is
+    // far cheaper than evaluating dozens of 3-D noise hashes for every sky pixel.
+    let seed = 0x37c4a91;
+    const random = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    const grids = [
+      { w: 4, h: 3 }, { w: 8, h: 5 }, { w: 16, h: 10 },
+      { w: 32, h: 20 }, { w: 64, h: 40 }, { w: 128, h: 80 }
+    ].map(g => ({ ...g, data: Float32Array.from({ length: g.w * g.h }, random) }));
+    const smooth01 = x => x * x * (3 - 2 * x);
+    function sampleGrid(g, u, v) {
+      u -= Math.floor(u); v -= Math.floor(v);
+      const x = u * g.w, y = v * g.h;
+      const ix = Math.floor(x), iy = Math.floor(y);
+      const fx = smooth01(x - ix), fy = smooth01(y - iy);
+      const x0 = ix % g.w, x1 = (ix + 1) % g.w;
+      const y0 = iy % g.h, y1 = (iy + 1) % g.h;
+      const a = g.data[y0 * g.w + x0], b = g.data[y0 * g.w + x1];
+      const c = g.data[y1 * g.w + x0], d = g.data[y1 * g.w + x1];
+      return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy;
+    }
+    const data = new Uint8Array(width * height * 4);
+    const broadWeights = [0.45, 0.26, 0.15, 0.08, 0.06, 0.00];
+    const detailWeights = [0.00, 0.04, 0.13, 0.24, 0.30, 0.29];
+    const fineWeights = [0.00, 0.00, 0.06, 0.18, 0.31, 0.45];
+    for (let y = 0; y < height; y++) {
+      const v = y / height;
+      for (let x = 0; x < width; x++) {
+        const u = x / width;
+        const n0 = sampleGrid(grids[0], u, v), n1 = sampleGrid(grids[1], u, v);
+        const n2 = sampleGrid(grids[2], u, v), n3 = sampleGrid(grids[3], u, v);
+        const n4 = sampleGrid(grids[4], u, v), n5 = sampleGrid(grids[5], u, v);
+        const r = n0 * 0.45 + n1 * 0.26 + n2 * 0.15 + n3 * 0.08 + n4 * 0.06;
+        const g = n1 * 0.04 + n2 * 0.13 + n3 * 0.24 + n4 * 0.30 + n5 * 0.29;
+        const b = n2 * 0.06 + n3 * 0.18 + n4 * 0.31 + n5 * 0.45;
+        const idx = (y * width + x) * 4;
+        data[idx] = Math.round(r * 255);
+        data[idx + 1] = Math.round(g * 255);
+        data[idx + 2] = Math.round(b * 255);
+        data[idx + 3] = 255;
+      }
+    }
+    const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
+    texture.colorSpace = THREE.NoColorSpace;
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  function addProceduralWaveDisplacement(water) {
+    // Patch the standard Water shaders with restrained geometric swell and foam.
+    // The normal texture adds fine ripples; crest foam is subtle and fades with distance.
+    let vertexShader = water.material.vertexShader;
+    let fragmentShader = water.material.fragmentShader;
+    const mainTag = 'void main() {';
+    const mirrorTag = 'mirrorCoord = modelMatrix * vec4( position, 1.0 );';
+    const viewTag = 'vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );';
+    const foamTag = 'vec3 outgoingLight = albedo;';
+    if (!vertexShader.includes(mainTag) || !vertexShader.includes(mirrorTag) || !vertexShader.includes(viewTag)) {
+      console.warn('Water.js cambió la plantilla del vértice; se conserva el oleaje normal-map.');
+      water.material.uniforms.uWaveStrength = { value: settings.waves };
+      return false;
+    }
+    const declarations = ( /uniform\s+float\s+time\s*;/.test(vertexShader.split(mainTag)[0]) ? '' : 'uniform float time;\n' ) + 'uniform float uWaveStrength;\nvarying vec2 vWaveSlope;\n';
+    vertexShader = vertexShader.replace(mainTag, declarations + mainTag);
+    vertexShader = vertexShader.replace(mirrorTag, `
+      vec3 displacedPosition = position;
+      vec2 baseP = vec2(position.x, -position.y);
+      float t = time;
+      // Subtle domain warping makes crest lines meander instead of reading as parallel sine strips.
+      float warpA = baseP.y*.018 + t*.09;
+      float warpB = baseP.y*.047 - t*.15;
+      float warpC = baseP.x*.016 - t*.10;
+      float warpD = baseP.x*.039 + baseP.y*.011 + t*.13;
+      float warpX = 3.40*sin(warpA) + 1.40*sin(warpB);
+      float warpZ = 2.80*sin(warpC) + .90*sin(warpD);
+      float warpX_dz = 3.40*.018*cos(warpA) + 1.40*.047*cos(warpB);
+      float warpZ_dx = 2.80*.016*cos(warpC) + .90*.039*cos(warpD);
+      float warpZ_dz = .90*.011*cos(warpD);
+      vec2 p = baseP + vec2(warpX, warpZ);
+      float p1 = dot(p, vec2(.050,.022)) + t*.62;
+      float p2 = dot(p, vec2(-.037,.091)) + t*.91 + 1.17;
+      float p3 = dot(p, vec2(.132,-.096)) + t*1.13 + 2.36;
+      float p4 = dot(p, vec2(-.172,-.142)) + t*1.43 + .42;
+      float p5 = dot(p, vec2(.27,-.205)) + t*1.72 + 1.8;
+      float p6 = dot(p, vec2(-.088,.182)) + t*.77 + .87;
+      float p7 = dot(p, vec2(.33,.052)) + t*1.92 + 2.08;
+      float p8 = dot(p, vec2(-.214,.276)) + t*.83 + 2.61;
+      float p9 = dot(p, vec2(.342,.173)) + t*2.03 + .38;
+      float p10 = dot(p, vec2(-.284,-.233)) + t*1.57 + 4.05;
+      float s1=sin(p1), s2=sin(p2), s3=sin(p3), s4=sin(p4), s5=sin(p5), s6=sin(p6), s7=sin(p7), s8=sin(p8), s9=sin(p9), s10=sin(p10);
+      float c1=cos(p1), c2=cos(p2), c3=cos(p3), c4=cos(p4), c5=cos(p5), c6=cos(p6), c7=cos(p7), c8=cos(p8), c9=cos(p9), c10=cos(p10);
+      float h = .59*s1 + .31*s2 + .165*s3 + .085*s4 + .033*s5 + .055*s6 + .024*s7 + .045*s8 + .023*s9 + .016*s10;
+      displacedPosition.z = h * uWaveStrength;
+      // Low-steepness horizontal drift keeps crests rounded without making the sea stormy.
+      float horizontalX = .22*(.59*.915*c1 + .31*(-.377)*c2 + .165*.808*c3 + .085*(-.771)*c4 + .033*.796*c5 + .055*(-.435)*c6 + .024*.988*c7 + .045*(-.613)*c8 + .023*.892*c9 + .016*(-.773)*c10) * uWaveStrength;
+      float horizontalZ = .22*(.59*.403*c1 + .31*.927*c2 + .165*(-.588)*c3 + .085*(-.636)*c4 + .033*(-.605)*c5 + .055*.900*c6 + .024*.156*c7 + .045*.790*c8 + .023*.452*c9 + .016*(-.634)*c10) * uWaveStrength;
+      displacedPosition.x += horizontalX;
+      displacedPosition.y -= horizontalZ;
+      float dhdx = .59*c1*(.050 + .022*warpZ_dx) + .31*c2*(-.037 + .091*warpZ_dx) + .165*c3*(.132 - .096*warpZ_dx) + .085*c4*(-.172 - .142*warpZ_dx) + .033*c5*(.27 - .205*warpZ_dx) + .055*c6*(-.088 + .182*warpZ_dx) + .024*c7*(.33 + .052*warpZ_dx) + .045*c8*(-.214 + .276*warpZ_dx) + .023*c9*(.342 + .173*warpZ_dx) + .016*c10*(-.284 - .233*warpZ_dx);
+      float dhdz = .59*c1*(.050*warpX_dz + .022*(1.0+warpZ_dz)) + .31*c2*(-.037*warpX_dz + .091*(1.0+warpZ_dz)) + .165*c3*(.132*warpX_dz - .096*(1.0+warpZ_dz)) + .085*c4*(-.172*warpX_dz - .142*(1.0+warpZ_dz)) + .033*c5*(.27*warpX_dz - .205*(1.0+warpZ_dz)) + .055*c6*(-.088*warpX_dz + .182*(1.0+warpZ_dz)) + .024*c7*(.33*warpX_dz + .052*(1.0+warpZ_dz)) + .045*c8*(-.214*warpX_dz + .276*(1.0+warpZ_dz)) + .023*c9*(.342*warpX_dz + .173*(1.0+warpZ_dz)) + .016*c10*(-.284*warpX_dz - .233*(1.0+warpZ_dz));
+      vWaveSlope = vec2(dhdx, dhdz) * uWaveStrength;
+      mirrorCoord = modelMatrix * vec4(displacedPosition, 1.0);`);
+    vertexShader = vertexShader.replace(viewTag, 'vec4 mvPosition = modelViewMatrix * vec4( displacedPosition, 1.0 );');
+
+    // r180 Water exposes these stable material outputs. If upstream ever changes them,
+    // geometric waves still work without risking a broken shader program.
+    if (fragmentShader.includes(foamTag) && fragmentShader.includes('uniform sampler2D normalSampler;')) {
+      fragmentShader = fragmentShader.replace(mainTag, 'uniform float uWaveStrength;\nuniform float uFoamStrength;\nvarying vec2 vWaveSlope;\n' + mainTag);
+      const normalLine = /vec3 surfaceNormal = normalize\(\s*noise\.xzy \* vec3\(\s*1\.5,\s*1\.0,\s*1\.5\s*\)\s*\);/;
+      if (normalLine.test(fragmentShader)) {
+        fragmentShader = fragmentShader.replace(normalLine, `vec3 surfaceNormal = normalize( noise.xzy * vec3( 1.5, 1.0, 1.5 ) );\n      vec3 swellNormal = normalize(vec3(-vWaveSlope.x, 1.0, -vWaveSlope.y));\n      float normalDetailFade = 1.0 - smoothstep(80.0, 420.0, length(eye - worldPosition.xyz));
+      surfaceNormal = normalize(swellNormal + (surfaceNormal - vec3(0.0, 1.0, 0.0)) * mix(0.32, 0.72, normalDetailFade));`);
+      } else { console.warn('No se encontró la normal base del shader Water; se conservan normales de textura.'); }
+      fragmentShader = fragmentShader.replace(foamTag, `
+      vec3 outgoingLight = albedo;
+      float crestFoamNoise = texture2D(normalSampler, (worldPosition.xz + vec2(time * 1.25, -time * 0.86)) * 0.052).r;
+      float crestFoam = smoothstep(0.75 * uWaveStrength, 1.03 * uWaveStrength, worldPosition.y);
+      crestFoam *= smoothstep(0.40, 0.62, crestFoamNoise);
+      crestFoam *= 1.0 - smoothstep(135.0, 500.0, distance);
+      outgoingLight = mix(outgoingLight, vec3(0.68, 0.79, 0.77), crestFoam * 0.22 * uFoamStrength);
+      float oceanHaze = smoothstep(260.0, 1100.0, distance);
+      outgoingLight = mix(outgoingLight, vec3(0.20, 0.145, 0.12), oceanHaze * 0.28);`);
+      fragmentShader = fragmentShader.replace('float rf0 = 0.3;', 'float rf0 = 0.055;');
+    } else {
+      console.warn('Water.js cambió la salida del fragment shader; se omiten espuma y normales de oleaje.');
+    }
+    water.material.vertexShader = vertexShader;
+    water.material.fragmentShader = fragmentShader;
+    water.material.uniforms.uWaveStrength = { value: settings.waves };
+    water.material.uniforms.uFoamStrength = { value: settings.foam };
+    water.material.needsUpdate = true;
+    return true;
+  }
+
+  function initThree({ THREE, Water, Sky }) {
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance', stencil: false, depth: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.45));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    // Filmic exposure tuned for a low sun: preserve warm highlights while keeping the upper sky saturated.
+    renderer.toneMappingExposure = 1.0;
+    renderer.info.autoReset = true;
+    renderer.domElement.id = 'oceanCanvas';
+    renderer.domElement.setAttribute('aria-label', 'Océano procedural interactivo');
+    stage.replaceChildren(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, .1, 14000);
+    const sky = new Sky();
+    sky.scale.setScalar(9000);
+    scene.add(sky);
+
+    // Lightweight procedural stratus/wispy clouds. The dome sits inside the far plane,
+    // blends over the analytic Sky, and is also visible in Water's planar reflection.
+    const cloudNoise = createCloudNoiseTexture(THREE);
+    cloudNoise.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
+    const cloudMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uSunDirection: { value: new THREE.Vector3(0.39, 0.038, -0.92) },
+        uCloudNoise: { value: cloudNoise }
+      },
+      vertexShader: `varying vec3 vCloudDir; void main(){ vCloudDir=normalize(position); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+      fragmentShader: `
+        precision highp float;
+        uniform float uTime;
+        uniform vec3 uSunDirection;
+        uniform sampler2D uCloudNoise;
+        varying vec3 vCloudDir;
+        const float PI = 3.141592653589793;
+        void main(){
+          vec3 d=normalize(vCloudDir);
+          float elevation=asin(clamp(d.y,-1.0,1.0));
+          float longitude=atan(d.z,d.x)/(2.0*PI)+0.5;
+          vec2 uv=vec2(fract(longitude),clamp((elevation+0.12)/0.72,0.0,1.0));
+          // Slow advection and texture-space warping break the tiled look without expensive per-pixel 3-D noise.
+          vec4 warp=texture2D(uCloudNoise,uv*vec2(0.82,1.12)+vec2(uTime*0.0016,0.17-uTime*0.0003));
+          vec2 warpedUV=uv+(warp.rg-0.5)*vec2(0.105,0.046)+vec2(-uTime*0.0017,0.0);
+          vec4 cloudA=texture2D(uCloudNoise,warpedUV+vec2(uTime*0.0015,0.0));
+          vec4 cloudB=texture2D(uCloudNoise,warpedUV*vec2(2.15,1.7)+vec2(-uTime*0.0022,0.31));
+          float lowDensity=cloudA.r*0.76+cloudB.g*0.24;
+          float lowShape=smoothstep(0.455,0.665,lowDensity);
+          float lowBand=smoothstep(-0.060,-0.012,elevation)*(1.0-smoothstep(0.115,0.195,elevation));
+          float lowAlpha=lowShape*lowBand*0.50;
+          vec4 highA=texture2D(uCloudNoise,warpedUV*vec2(2.35,3.1)+vec2(-uTime*0.0031,0.43));
+          float highDensity=highA.b*0.78+highA.g*0.22;
+          float cirrusShape=smoothstep(0.475,0.700,highDensity)*smoothstep(0.31,0.59,highA.g);
+          float highBand=smoothstep(0.125,0.17,elevation)*(1.0-smoothstep(0.31,0.39,elevation));
+          float highAlpha=cirrusShape*highBand*0.13;
+          float cloudsAlpha=lowAlpha+highAlpha*(1.0-lowAlpha);
+
+          vec3 sunDir=normalize(uSunDirection);
+          float sunDot=clamp(dot(d,sunDir),-1.0,1.0);
+          float angularDistance=sqrt(max(0.0,2.0*(1.0-sunDot)));
+          // A wide aureole and a tighter warm core make the low sun blend into the atmosphere.
+          float haloWide=exp(-angularDistance*5.2);
+          float haloCore=exp(-angularDistance*18.0);
+          float glowAlpha=clamp(haloWide*0.20+haloCore*0.13,0.0,0.30);
+          vec3 glowColor=mix(vec3(1.13,0.39,0.19),vec3(1.42,0.88,0.59),smoothstep(0.005,0.17,angularDistance));
+
+          float sunward=smoothstep(-0.30,0.62,sunDot);
+          vec3 cloudShadow=mix(vec3(0.105,0.145,0.225),vec3(0.285,0.205,0.235),sunward*0.82);
+          vec3 cloudLit=mix(vec3(0.42,0.46,0.58),vec3(1.14,0.69,0.44),sunward);
+          float cloudTop=smoothstep(0.50,0.76,lowDensity);
+          vec3 lowColor=mix(cloudShadow,cloudLit,0.24+0.72*cloudTop);
+          vec3 highColor=mix(vec3(0.34,0.39,0.52),vec3(0.96,0.70,0.56),sunward*0.72);
+          highColor*=0.78+0.28*smoothstep(0.51,0.77,highDensity);
+          vec3 cloudsColor=(lowColor*lowAlpha+highColor*highAlpha*(1.0-lowAlpha))/max(cloudsAlpha,0.0001);
+
+          vec3 premul=cloudsColor*cloudsAlpha+glowColor*glowAlpha*(1.0-cloudsAlpha);
+          float alpha=cloudsAlpha+glowAlpha*(1.0-cloudsAlpha);
+          if(alpha<0.006) discard;
+          gl_FragColor=vec4(premul/max(alpha,0.0001),clamp(alpha,0.0,0.76));
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.BackSide,
+      blending: THREE.NormalBlending
+    });
+    // Keep the cloud shell close to the atmospheric sky shell so its spherical edge cannot appear as a near horizon cutoff.
+    const cloudDome = new THREE.Mesh(new THREE.SphereGeometry(8200, 64, 48), cloudMaterial);
+    cloudDome.frustumCulled = false;
+    cloudDome.renderOrder = 1;
+    scene.add(cloudDome);
+
+    const skyUniforms = sky.material.uniforms;
+    // Atmospheric scattering: cleaner blue upper sky with a warm but not washed-out horizon.
+    skyUniforms.turbidity.value = 5.6;
+    skyUniforms.rayleigh.value = 1.9;
+    skyUniforms.mieCoefficient.value = .0031;
+    skyUniforms.mieDirectionalG.value = .82;
+
+    // Low golden-hour sun, close enough to the sea to create a long glancing reflection.
+    const sunElevation = 2.25;
+    const sunAzimuth = 157;
+    const phi = THREE.MathUtils.degToRad(90 - sunElevation);
+    const theta = THREE.MathUtils.degToRad(sunAzimuth);
+    const sunDirection = new THREE.Vector3().setFromSphericalCoords(1, phi, theta).normalize();
+    skyUniforms.sunPosition.value.copy(sunDirection);
+    const sunLight = new THREE.DirectionalLight(0xffbd86, 2.6);
+    sunLight.position.copy(sunDirection).multiplyScalar(1200);
+    scene.add(sunLight);
+    scene.add(new THREE.HemisphereLight(0x9ccbd7, 0x06131d, .42));
+
+    const dprMax = Math.min(window.devicePixelRatio || 1, 1.45);
+    const isCompactViewport = window.innerWidth < 700;
+    const reflectionResolution = isCompactViewport ? 256 : 512;
+    // Large horizon coverage prevents the finite water patch ending visibly at shallow viewing angles.
+    // Keep vertex spacing similar across form factors to retain the medium swell without excess GPU cost.
+    const subdivisions = isCompactViewport ? 500 : 760;
+    const waterSize = isCompactViewport ? 6000 : 8000;
+    const waterGeometry = new THREE.PlaneGeometry(waterSize, waterSize, subdivisions, subdivisions);
+    const normalTexture = createWaterNormals(THREE, 256);
+    cloudMaterial.uniforms.uSunDirection.value.copy(sunDirection);
+    const water = new Water(waterGeometry, {
+      textureWidth: reflectionResolution,
+      textureHeight: reflectionResolution,
+      waterNormals: normalTexture,
+      sunDirection: sunDirection.clone(),
+      sunColor: 0xffc18a,
+      waterColor: 0x073346,
+      distortionScale: 2.45,
+      size: 1.05,
+      alpha: 1.0,
+      fog: false
+    });
+    water.rotation.x = -Math.PI / 2;
+    // Shift the expanded patch towards the view so its far edge stays beyond the visible horizon.
+    water.position.set(0, 0, isCompactViewport ? -1050 : -1400);
+    water.frustumCulled = false;
+    scene.add(water);
+    const displacementEnabled = addProceduralWaveDisplacement(water);
+    water.material.uniforms.sunDirection.value.copy(sunDirection);
+    water.material.uniforms.sunColor.value.set(0xffc18a);
+    water.material.uniforms.waterColor.value.set(0x073346);
+
+    let dpr = dprMax;
+    engine = {
+      renderer, scene, camera, water, waterGeometry, normalTexture, sky,
+      dpr, maxDpr: dprMax, displacementEnabled,
+      setDpr(v) {
+        dpr = Math.max(.85, Math.min(dprMax, v));
+        this.dpr = dpr;
+        renderer.setPixelRatio(dpr);
+        renderer.setSize(window.innerWidth, window.innerHeight, false);
+      },
+      applyView() {
+        camera.position.set(0, view.height, view.z);
+        const cp = Math.cos(view.pitch);
+        const direction = new THREE.Vector3(Math.sin(view.yaw) * cp, Math.sin(view.pitch), -Math.cos(view.yaw) * cp);
+        camera.lookAt(camera.position.clone().add(direction.multiplyScalar(100)));
+        camera.updateMatrixWorld();
+      }
+    };
+    engine.applyView();
+    statusText.textContent = 'OLEAJE MEDIO · THREE.JS';
+    statusDot.style.background = '#7ce0c6';
+    renderMode.textContent = 'REFLEJOS EN TIEMPO REAL · CALIDAD ADAPTATIVA';
+    onPointerControls(renderer.domElement, engine.applyView);
+
+    const resize = () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    };
+    window.addEventListener('resize', resize, { passive: true });
+    let start = performance.now(), last = start;
+    renderer.setAnimationLoop(now => {
+      const dt = (now - last) / 1000;
+      last = now;
+      const elapsed = (now - start) / 1000;
+      cloudMaterial.uniforms.uTime.value = elapsed;
+      water.material.uniforms.time.value = elapsed * settings.wind;
+      if (water.material.uniforms.uWaveStrength) water.material.uniforms.uWaveStrength.value = settings.waves;
+      if (water.material.uniforms.uFoamStrength) water.material.uniforms.uFoamStrength.value = settings.foam;
+      water.material.uniforms.distortionScale.value = 1.35 + settings.foam * 1.25;
+      water.material.uniforms.size.value = .92 + settings.foam * .26;
+      engine.applyView();
+      renderer.render(scene, camera);
+      updateFps(dt);
+    });
+  }
+
+  // Offline-compatible visual fallback. The production path above is a Three.js mesh scene;
+  // this analytic ray/surface renderer keeps a useful preview alive when a CDN is blocked.
+  const fallbackVertex = `attribute vec2 aPosition; varying vec2 vUv; void main(){vUv=aPosition*.5+.5;gl_Position=vec4(aPosition,0.,1.);}`;
+  const fallbackFragment = `
+    precision highp float; varying vec2 vUv; uniform vec2 uResolution; uniform float uTime; uniform float uWindSpeed; uniform float uWaveStrength; uniform float uFoamStrength; uniform vec3 uSunDir; uniform float uYaw; uniform float uPitch; uniform float uHeight; uniform float uZoom;
+    float hash21(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);}
+    float noise2(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hash21(i),hash21(i+vec2(1.,0.)),f.x),mix(hash21(i+vec2(0.,1.)),hash21(i+vec2(1.,1.)),f.x),f.y);}
+    float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<3;i++){v+=a*noise2(p);p=mat2(.8,-.6,.6,.8)*p*2.02;a*=.5;}return v;}
+    vec2 warpedP(vec2 p,float t){float a=p.y*.018+t*.09,b=p.y*.047-t*.15,c=p.x*.016-t*.10,d=p.x*.039+p.y*.011+t*.13;return p+vec2(3.40*sin(a)+1.40*sin(b),2.80*sin(c)+.90*sin(d));}
+    float wh(vec2 p,float t){p=warpedP(p,t);return (.59*sin(dot(p,vec2(.050,.022))+t*.62)+.31*sin(dot(p,vec2(-.037,.091))+t*.91+1.17)+.165*sin(dot(p,vec2(.132,-.096))+t*1.13+2.36)+.085*sin(dot(p,vec2(-.172,-.142))+t*1.43+.42)+.033*sin(dot(p,vec2(.27,-.205))+t*1.72+1.8)+.055*sin(dot(p,vec2(-.088,.182))+t*.77+.87)+.024*sin(dot(p,vec2(.33,.052))+t*1.92+2.08)+.045*sin(dot(p,vec2(-.214,.276))+t*.83+2.61)+.023*sin(dot(p,vec2(.342,.173))+t*2.03+.38)+.016*sin(dot(p,vec2(-.284,-.233))+t*1.57+4.05))*uWaveStrength;}
+    vec2 gradH(vec2 p,float t){float wa=p.y*.018+t*.09,wb=p.y*.047-t*.15,wc=p.x*.016-t*.10,wd=p.x*.039+p.y*.011+t*.13;float wxz=3.40*.018*cos(wa)+1.40*.047*cos(wb),wzx=2.80*.016*cos(wc)+.90*.039*cos(wd),wzz=.90*.011*cos(wd);p=warpedP(p,t);float a=dot(p,vec2(.050,.022))+t*.62,b=dot(p,vec2(-.037,.091))+t*.91+1.17,c=dot(p,vec2(.132,-.096))+t*1.13+2.36,d=dot(p,vec2(-.172,-.142))+t*1.43+.42,e=dot(p,vec2(.27,-.205))+t*1.72+1.8,f=dot(p,vec2(-.088,.182))+t*.77+.87,g=dot(p,vec2(.33,.052))+t*1.92+2.08,h=dot(p,vec2(-.214,.276))+t*.83+2.61,i=dot(p,vec2(.342,.173))+t*2.03+.38,j=dot(p,vec2(-.284,-.233))+t*1.57+4.05;float gx=.59*cos(a)*(.050+.022*wzx)+.31*cos(b)*(-.037+.091*wzx)+.165*cos(c)*(.132-.096*wzx)+.085*cos(d)*(-.172-.142*wzx)+.033*cos(e)*(.27-.205*wzx)+.055*cos(f)*(-.088+.182*wzx)+.024*cos(g)*(.33+.052*wzx)+.045*cos(h)*(-.214+.276*wzx)+.023*cos(i)*(.342+.173*wzx)+.016*cos(j)*(-.284-.233*wzx);float gz=.59*cos(a)*(.050*wxz+.022*(1.+wzz))+.31*cos(b)*(-.037*wxz+.091*(1.+wzz))+.165*cos(c)*(.132*wxz-.096*(1.+wzz))+.085*cos(d)*(-.172*wxz-.142*(1.+wzz))+.033*cos(e)*(.27*wxz-.205*(1.+wzz))+.055*cos(f)*(-.088*wxz+.182*(1.+wzz))+.024*cos(g)*(.33*wxz+.052*(1.+wzz))+.045*cos(h)*(-.214*wxz+.276*(1.+wzz))+.023*cos(i)*(.342*wxz+.173*(1.+wzz))+.016*cos(j)*(-.284*wxz-.233*(1.+wzz));return vec2(gx,gz)*uWaveStrength;}
+    vec3 sky(vec3 d){
+      d=normalize(d); float h=max(d.y,0.0); vec3 sunDir=normalize(uSunDir);
+      float elevation=asin(clamp(d.y,-1.0,1.0));
+      float sd=clamp(dot(d,sunDir),-1.0,1.0); float angle=acos(sd);
+      vec3 zenith=vec3(.018,.065,.125), upper=vec3(.055,.145,.215);
+      vec3 horizonCool=vec3(.25,.30,.37), horizonWarm=vec3(.72,.34,.20);
+      float horizonBand=exp(-abs(elevation)*10.5);
+      float sunward=smoothstep(-.15,.8,sd);
+      vec3 horizon=mix(horizonCool,horizonWarm,sunward);
+      vec3 col=mix(zenith,upper,pow(smoothstep(.03,.9,h),.7));
+      col=mix(col,horizon,horizonBand*.72);
+      float warmAureole=exp(-angle*5.3), warmCore=exp(-angle*18.0);
+      col=mix(col,vec3(1.15,.43,.22),clamp(warmAureole*.40,0.0,.48));
+      col=mix(col,vec3(1.28,.78,.48),clamp(warmCore*.22,0.0,.24));
+      // Broken, layered low clouds plus sparse high cirrus; a 3-D field avoids a longitude seam.
+      vec3 q=vec3(d.x*20.0,(elevation-.015)*38.0,d.z*20.0);
+      float warp=fbm(q.xz*.24+vec2(uTime*.003,1.7));
+      q.xz+=vec2(warp-.5,noise2(q.xz*.27+vec2(2.3,uTime*.002))-.5)*3.1;
+      float base=fbm(q.xz*.43+vec2(-uTime*.006,uTime*.003));
+      float detail=fbm(q.xz*1.08+vec2(3.4,-uTime*.009));
+      float lowShape=smoothstep(.465,.665,base*.76+detail*.24);
+      float lowBand=smoothstep(-.055,-.012,elevation)*(1.0-smoothstep(.115,.195,elevation));
+      float cloud=lowShape*lowBand*.43;
+      vec2 cirrusUV=vec2(d.x*31.0,(elevation-.205)*77.0);
+      float highBase=fbm(cirrusUV*.76+vec2(-uTime*.003,2.8));
+      float highDetail=fbm(cirrusUV*1.75+vec2(uTime*.005,1.1));
+      float highShape=smoothstep(.48,.70,highBase*.73+highDetail*.27)*smoothstep(.25,.58,highDetail);
+      float highBand=smoothstep(.125,.17,elevation)*(1.0-smoothstep(.31,.39,elevation));
+      float highCloud=highShape*highBand*.18;
+      float cover=cloud+highCloud*(1.0-cloud);
+      vec3 shade=mix(vec3(.085,.12,.20),vec3(.28,.19,.22),sunward*.82);
+      vec3 lit=mix(vec3(.40,.44,.55),vec3(1.06,.66,.43),sunward);
+      vec3 lowColor=mix(shade,lit,.25+.70*smoothstep(.50,.76,base));
+      vec3 highColor=mix(vec3(.30,.36,.49),vec3(.88,.64,.51),sunward*.72);
+      float cloudLum=cloud+highCloud;
+      vec3 cloudColor=(lowColor*cloud+highColor*highCloud)/max(cloudLum,.0001);
+      col=mix(col,cloudColor,clamp(cover,0.0,.70));
+      // Physically small sun disc with a warmer aureole around it.
+      float disc=smoothstep(cos(radians(.29)),cos(radians(.20)),sd);
+      col=mix(col,vec3(1.8,1.12,.70),disc);
+      return col;
+    }
+    void main(){
+      vec2 screen=(vUv*2.-1.);screen.x*=uResolution.x/uResolution.y;
+      float f=tan(radians(52.)*.5); vec3 ro=vec3(0.,uHeight,13.5+(uHeight-4.0)*1.05);float cp=cos(uPitch);vec3 rd=normalize(vec3(screen.x*f,screen.y*f, -1.));
+      float cy=cos(uYaw),sy=sin(uYaw);rd.xz=mat2(cy,-sy,sy,cy)*rd.xz;rd.y=rd.y*cp+(-.0);rd=normalize(rd+vec3(0.,sin(uPitch),0.));
+      if(rd.y>-0.001){gl_FragColor=vec4(sky(rd),1.);return;}
+      float t=ro.y/max(-rd.y,.0008);vec2 p=ro.xz+rd.xz*t;
+      for(int i=0;i<4;i++){float h=wh(p,uTime*uWindSpeed);t=max(0.,(ro.y-h)/max(-rd.y,.0008));p=ro.xz+rd.xz*t;}
+      if(t>3500.){gl_FragColor=vec4(sky(rd),1.);return;}
+      float tm=uTime*uWindSpeed;vec2 g=gradH(p,tm);g+=.048*vec2(.76,.31)*cos(p.x*.76+p.y*.31+tm*1.65);g+=.027*vec2(.29,-.91)*cos(p.x*.29-p.y*.91-tm*1.28);g+=.014*vec2(1.08,.53)*cos(p.x*1.08+p.y*.53+tm*2.1);vec2 bumpUV=p*.68+vec2(tm*.028,-tm*.019);float bump0=noise2(bumpUV);g.x+=(noise2(bumpUV+vec2(.12,0.))-bump0)*.22;g.y+=(noise2(bumpUV+vec2(0.,.12))-bump0)*.22;vec3 N=normalize(vec3(-g.x,1.,-g.y));vec3 V=normalize(ro-vec3(p.x,wh(p,tm),p.y));vec3 L=normalize(uSunDir);
+      float fresnel=.025+.975*pow(1.-max(dot(N,V),0.),5.);vec3 R=reflect(-V,N);vec3 refl=sky(R);vec3 deep=vec3(.001,.006,.018);vec3 teal=vec3(.0025,.031,.052);vec3 water=mix(deep,teal,clamp(.5+wh(p,tm)*.12,0.,1.));water*=.72+max(dot(N,L),0.)*.36;
+      float spec=max(dot(reflect(-L,N),V),0.);float glint=pow(spec,145.)*2.4+pow(spec,35.)*.065;float detailNoise=fbm(p*.31+vec2(tm*.018,-tm*.012));glint+=pow(max(dot(reflect(-L,normalize(N+vec3((detailNoise-.5)*.075,0.,(noise2(p*.7)-.5)*.075))),V),0.),95.)*.16;
+      vec3 col=mix(water,refl,clamp(.025+fresnel*.72,0.,.88));col+=vec3(1.,.67,.39)*glint*(.65+.35*fresnel);
+      float grain=noise2(p*1.25+vec2(tm*.09,-tm*.07));float crest=wh(p,tm)/1.05;float fade=1.-smoothstep(155.,560.,t);float foam=smoothstep(.76,1.02,crest)*smoothstep(.36,.67,grain)*uFoamStrength*fade;foam+=smoothstep(.92,1.12,crest)*smoothstep(.57,.77,noise2(p*.91+vec2(-tm*.12,tm*.09)))*.16*uFoamStrength*fade;foam*=smoothstep(.34,.62,noise2(p*1.9+vec2(tm*.08,-tm*.07)));col=mix(col,vec3(.59,.76,.75),clamp(foam*.25,0.,.32));col=mix(col,vec3(.18,.13,.11),smoothstep(260.,1000.,t)*.33);
+      float lum=dot(col,vec3(.2126,.7152,.0722));col=mix(vec3(lum*.72,lum*.88,lum),col,1.12);col=col/(1.+max(col-vec3(.6),vec3(0.))*.12);col=pow(max(col,vec3(0.)),vec3(.88));gl_FragColor=vec4(col,1.);
+    }`;
+  function compileShader(gl,type,source){const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){const err=gl.getShaderInfoLog(s);gl.deleteShader(s);throw new Error(err);}return s;}
+  function initFallback(){
+    let canvas=document.createElement('canvas');canvas.id='oceanCanvas';canvas.setAttribute('aria-label','Previsualización del océano procedural');stage.replaceChildren(canvas);
+    const gl=canvas.getContext('webgl',{antialias:true,alpha:false,powerPreference:'high-performance'});
+    if(!gl){statusText.textContent='WEBGL NO DISPONIBLE';statusDot.style.background='#e29a72';renderMode.textContent='ESTE NAVEGADOR NO PUEDE ABRIR WEBGL';return;}
+    try{
+      const vs=compileShader(gl,gl.VERTEX_SHADER,fallbackVertex),fs=compileShader(gl,gl.FRAGMENT_SHADER,fallbackFragment),program=gl.createProgram();gl.attachShader(program,vs);gl.attachShader(program,fs);gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program));gl.useProgram(program);
+      const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);const a=gl.getAttribLocation(program,'aPosition');gl.enableVertexAttribArray(a);gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);
+      const loc={resolution:gl.getUniformLocation(program,'uResolution'),time:gl.getUniformLocation(program,'uTime'),wind:gl.getUniformLocation(program,'uWindSpeed'),waves:gl.getUniformLocation(program,'uWaveStrength'),foam:gl.getUniformLocation(program,'uFoamStrength'),sun:gl.getUniformLocation(program,'uSunDir'),yaw:gl.getUniformLocation(program,'uYaw'),pitch:gl.getUniformLocation(program,'uPitch'),height:gl.getUniformLocation(program,'uHeight'),zoom:gl.getUniformLocation(program,'uZoom')};
+      let dpr=Math.min(window.devicePixelRatio||1,1.4);engine={gl,dpr,maxDpr:dpr,setDpr(v){dpr=Math.max(.8,Math.min(this.maxDpr,v));this.dpr=dpr;resize();},applyView(){}};
+      statusText.textContent='WEBGL · MODO COMPATIBLE';statusDot.style.background='#e6c28b';renderMode.textContent='VISTA ALTERNATIVA · REQUIERE WEBGL';
+      onPointerControls(canvas,()=>{});
+      const resize=()=>{canvas.width=Math.floor(window.innerWidth*dpr);canvas.height=Math.floor(window.innerHeight*dpr);canvas.style.width='100%';canvas.style.height='100%';gl.viewport(0,0,canvas.width,canvas.height);};window.addEventListener('resize',resize,{passive:true});resize();
+      const start=performance.now();let last=start;
+      function draw(now){const dt=(now-last)/1000;last=now;const t=(now-start)/1000;gl.viewport(0,0,canvas.width,canvas.height);gl.useProgram(program);gl.uniform2f(loc.resolution,canvas.width,canvas.height);gl.uniform1f(loc.time,t);gl.uniform1f(loc.wind,settings.wind);gl.uniform1f(loc.waves,settings.waves);gl.uniform1f(loc.foam,settings.foam);gl.uniform3f(loc.sun,.391,.0393,-.920);gl.uniform1f(loc.yaw,view.yaw);gl.uniform1f(loc.pitch,view.pitch);gl.uniform1f(loc.height,view.height);gl.uniform1f(loc.zoom,view.z);gl.drawArrays(gl.TRIANGLE_STRIP,0,4);updateFps(dt);requestAnimationFrame(draw);}requestAnimationFrame(draw);
+    }catch(e){console.error(e);statusText.textContent='ERROR DE SHADER';statusDot.style.background='#e07070';renderMode.textContent='NO SE PUDO COMPILAR EL SHADER';}
+  }
+  init();
+})();
+</script>
+</body>
+</html>

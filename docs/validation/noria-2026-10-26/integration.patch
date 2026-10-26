@@ -1,0 +1,54 @@
+--- /workspace/noria-integration-backup/SingaporeTrackBuilder.ts	2026-10-26 04:44:55.821225875 +0100
++++ src/game/circuits/singapore/SingaporeTrackBuilder.ts	2026-10-26 04:53:01.390547769 +0100
+@@ -23,6 +23,7 @@
+ import { createC3WaterSurface, type C3WaterSurface } from './SingaporeWaterSurface';
+ import { CurvedPitBuildingBuilder } from '../../world/CurvedPitBuildingBuilder';
+ import { createSingaporeMaritimeFleet, type SingaporeMaritimeFleet } from './SingaporeMaritimeFleet';
++import { SingaporeFerrisWheel } from './SingaporeFerrisWheel';
+ const _shadowCenterWorld = new THREE.Vector3();
+ const _shadowSphere = new THREE.Sphere();
+ 
+@@ -59,6 +60,7 @@
+   private waterMesh?: THREE.Mesh;
+   private waterMat!: THREE.MeshStandardMaterial;
+   private maritimeFleet?: SingaporeMaritimeFleet;
++  private ferrisWheel?: SingaporeFerrisWheel;
+   private whiteLineMat!: THREE.MeshStandardMaterial;
+   private yellowLineMat!: THREE.MeshStandardMaterial;
+   private floodlightPoleMat!: THREE.MeshStandardMaterial;
+@@ -157,6 +159,17 @@
+       if (object instanceof THREE.Mesh && object.castShadow && !object.userData.c3NoShadow) this.shadowCasterMeshes.push(object);
+     });
+     this.group.userData.c3Maritime = this.maritimeFleet.diagnostics;
++
++    // Preserve the complete supplied model and its own moving-parent matrices,
++    // shadow flags and cabin batches; do not pass it through the static sweep.
++    // Appending it after the fleet also preserves all approved construction seeds.
++    this.ferrisWheel = new SingaporeFerrisWheel(this.waterMesh!.position.y);
++    this.group.add(this.ferrisWheel.root);
++    this.ferrisWheel.root.updateMatrixWorld(true);
++    this.ferrisWheel.root.traverse(object => {
++      if (object instanceof THREE.Mesh && object.castShadow && !object.userData.c3NoShadow) this.shadowCasterMeshes.push(object);
++    });
++    this.group.userData.c3FerrisWheel = this.ferrisWheel.diagnostics;
+   }
+ 
+   private initMaterials(): void {
+@@ -1405,6 +1418,7 @@
+     this.waterSurface?.update(dt);
+     const oceanMaterial = this.waterSurface?.mesh.material as THREE.ShaderMaterial | undefined;
+     this.maritimeFleet?.update(dt, oceanMaterial?.uniforms.time.value, oceanMaterial?.uniforms.uWaveStrength.value);
++    this.ferrisWheel?.update(dt);
+     if (!this.ferrisWheelRimGroup) return;
+     this.ferrisWheelRimGroup.rotation.z = (this.ferrisWheelRimGroup.rotation.z + 0.04 * Math.min(dt, 0.1)) % (Math.PI * 2);
+     for (const child of this.ferrisWheelRimGroup.children) {
+@@ -1455,6 +1469,9 @@
+     // disposal of shared boat materials / textures / BatchedMesh buffers.
+     this.maritimeFleet?.dispose();
+     this.maritimeFleet = undefined;
++    // The landmark owns its instance buffers and packed transparent geometry.
++    this.ferrisWheel?.dispose();
++    this.ferrisWheel = undefined;
+     this.crowdSystem.dispose();
+     const geometries = new Set<THREE.BufferGeometry>();
+     const materials = new Set<THREE.Material>();

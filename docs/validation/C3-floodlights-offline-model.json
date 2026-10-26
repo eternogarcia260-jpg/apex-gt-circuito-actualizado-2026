@@ -1,0 +1,10 @@
+{
+  "fixtures": 205,
+  "modules": 1230,
+  "opticalCells": 22140,
+  "spatialBatches": 10,
+  "headLayerDraws": 40,
+  "totalHeadInstances": 820,
+  "estimatedHeadTriangles": 1666240,
+  "minimumAimDot": 0.9982
+}
