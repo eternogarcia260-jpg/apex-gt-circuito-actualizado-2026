@@ -14,6 +14,70 @@ export function cloneC3AsphaltMap(source: THREE.Texture): THREE.Texture {
   return clone;
 }
 
+export interface C3AsphaltTextureUrls {
+  albedo: string;
+  normal: string;
+  roughness: string;
+}
+
+/** Per-material texture scale and diagnostic metadata for C3 asphalt maps. */
+export interface C3AsphaltTextureLoadOptions {
+  label?: string;
+  repeat?: readonly [number, number];
+  normalScale?: number;
+}
+
+/** Replace the procedural fallback with a supplied, instance-owned PBR set. */
+export function loadC3AsphaltPBRMaps(
+  material: THREE.MeshStandardMaterial,
+  urls: C3AsphaltTextureUrls,
+  isDisposed: () => boolean,
+  options: C3AsphaltTextureLoadOptions = {},
+): void {
+  const loader = new THREE.TextureLoader();
+  const sources = [urls.albedo, urls.normal, urls.roughness];
+  const repeat = options.repeat ?? [2, 2];
+
+  void Promise.allSettled(sources.map(source => loader.loadAsync(source))).then(results => {
+    const loaded = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+    if (results.some(result => result.status === 'rejected')) {
+      loaded.forEach(texture => texture.dispose());
+      console.warn('[Circuit 3] No se pudo cargar el conjunto PBR del asfalto; se conserva el acabado de respaldo.');
+      return;
+    }
+    if (isDisposed()) {
+      loaded.forEach(texture => texture.dispose());
+      return;
+    }
+
+    const [albedo, normal, roughness] = loaded;
+    const configure = (texture: THREE.Texture, anisotropy: number) => {
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(repeat[0], repeat[1]);
+      texture.anisotropy = anisotropy;
+      texture.needsUpdate = true;
+    };
+    albedo.colorSpace = THREE.SRGBColorSpace;
+    normal.colorSpace = THREE.NoColorSpace;
+    roughness.colorSpace = THREE.NoColorSpace;
+    configure(albedo, 8);
+    configure(normal, 8);
+    configure(roughness, 4);
+
+    const previous = [material.map, material.normalMap, material.roughnessMap];
+    material.map = albedo;
+    material.normalMap = normal;
+    material.roughnessMap = roughness;
+    material.color.setHex(0xffffff);
+    const normalScale = options.normalScale ?? 0.85;
+    material.normalScale.set(normalScale, normalScale);
+    material.userData.c3AsphaltTextureSet = options.label ?? 'asphalt_02_2k';
+    material.needsUpdate = true;
+    previous.forEach(texture => texture?.dispose());
+  });
+}
+
 export function finishC3AsphaltSurface(material: THREE.MeshStandardMaterial): void {
   const size = 1024, cells = 88;
   const hash = (x: number, y: number, salt = 0): number => {

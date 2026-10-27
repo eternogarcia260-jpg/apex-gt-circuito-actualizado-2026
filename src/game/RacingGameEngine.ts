@@ -9,6 +9,7 @@
  */
 
 import * as THREE from 'three';
+import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
 import { DynamicSkySystem } from './environment/DynamicSkySystem';
 import { EngineSound, EngineAudioLayersState } from './audio/EngineSound';
 import { CarModel } from './models/CarModel';
@@ -36,7 +37,7 @@ import { RivalMechanicActor } from './pit/PitStopManager';
 import { playF1BoxRadioConfirmation, playPenaltyVoiceAudio, preloadPenaltyVoiceAudio } from '../utils/uiAudio';
 import { GraphicsQualityManager, GraphicsQualityPreset, GRAPHICS_PROFILES } from './graphics/GraphicsQualityManager';
 import { PilotWalkManager, PilotCameraPreset } from './pilot/PilotWalkManager';
-
+import { getCircuitContactShadowLocalY, getCircuitVehicleVisualOffset } from './circuits/singapore/SingaporeTrackSurface';
 export type { CameraViewMode, CameraDistanceMode, GraphicsQualityPreset, EngineAudioLayersState, PilotCameraPreset };
 
 export interface GameTelemetry {
@@ -144,6 +145,9 @@ export class RacingGameEngine {
   private hemiLight!: THREE.HemisphereLight;
   private daySkyTexture?: THREE.Texture;
   private envMapTexture?: THREE.Texture;
+  private c3HdrEnvironmentTarget?: THREE.WebGLRenderTarget;
+  private c3HdrSkyTexture?: THREE.DataTexture;
+  private c3HdrEnvironmentPromise?: Promise<THREE.WebGLRenderTarget | null>;
   private isDisposed = false;
 
   // Simulation Timing & 120Hz Physics Determinism
@@ -981,7 +985,8 @@ export class RacingGameEngine {
     const interpYaw = this.physics.prevYaw + yawDiff * alpha;
 
     const lift = this.pitStop.carElevatedY;
-    this.carModel.group.position.set(interpX, interpY + lift, interpZ);
+    const vehicleWorldY = interpY + lift + getCircuitVehicleVisualOffset(this.activeCircuit.id);
+    this.carModel.group.position.set(interpX, vehicleWorldY, interpZ);
     this.carModel.group.rotation.set(
       this.physics.pitch,
       interpYaw,
@@ -992,15 +997,13 @@ export class RacingGameEngine {
     if (this.carModel.contactShadowMesh) {
       this.carModel.contactShadowMesh.rotation.x = -this.physics.pitch;
       this.carModel.contactShadowMesh.rotation.z = -this.physics.roll;
-      const groundY = -interpY + 0.008;
+      this.carModel.contactShadowMesh.position.y = getCircuitContactShadowLocalY(this.activeCircuit.id, vehicleWorldY);
       if (this.pitStop.carElevatedY > 0.001) {
-        this.carModel.contactShadowMesh.position.y = groundY - this.pitStop.carElevatedY;
         (this.carModel.contactShadowMesh.material as THREE.MeshBasicMaterial).opacity = Math.max(
           0.30,
           0.88 - this.pitStop.carElevatedY * 2.2
         );
       } else {
-        this.carModel.contactShadowMesh.position.y = groundY;
         (this.carModel.contactShadowMesh.material as THREE.MeshBasicMaterial).opacity = 0.92;
       }
     }
@@ -1501,6 +1504,50 @@ export class RacingGameEngine {
     } catch {}
   }
 
+  private loadC3HdrEnvironment(): Promise<THREE.WebGLRenderTarget | null> {
+    if (this.c3HdrEnvironmentTarget) return Promise.resolve(this.c3HdrEnvironmentTarget);
+    if (this.c3HdrEnvironmentPromise) return this.c3HdrEnvironmentPromise;
+
+    const load = (async (): Promise<THREE.WebGLRenderTarget | null> => {
+      let source: THREE.DataTexture | null = null;
+      try {
+        source = await new HDRLoader().loadAsync('/environments/c3-kloofendal_48d_partly_cloudy_puresky_2k.hdr');
+        if (this.isDisposed) return null;
+
+        source.mapping = THREE.EquirectangularReflectionMapping;
+        const pmrem = new THREE.PMREMGenerator(this.renderer);
+        let target: THREE.WebGLRenderTarget;
+        try {
+          pmrem.compileEquirectangularShader();
+          target = pmrem.fromEquirectangular(source);
+        } finally {
+          pmrem.dispose();
+        }
+
+        if (this.isDisposed) {
+          target.dispose();
+          return null;
+        }
+        this.c3HdrEnvironmentTarget = target;
+        // Keep the original equirectangular HDR as C3's visible sky; PMREM stays
+        // dedicated to image-based lighting and PBR reflections.
+        this.c3HdrSkyTexture = source;
+        return target;
+      } catch (error) {
+        if (!this.isDisposed) console.warn('[Circuit 3] No se pudo cargar el HDR de Kloofendal; se conserva el entorno de respaldo.', error);
+        return null;
+      } finally {
+        if (source && source !== this.c3HdrSkyTexture) source.dispose();
+      }
+    })();
+
+    this.c3HdrEnvironmentPromise = load;
+    void load.finally(() => {
+      if (this.c3HdrEnvironmentPromise === load) this.c3HdrEnvironmentPromise = undefined;
+    });
+    return load;
+  }
+
   public applyCircuitAtmosphere(circuitId: CircuitId): void {
     const isSingapore = circuitId === 'singapore_marina';
     const isNight = false; // Always use high-radiance, high-visibility cinematic lighting
@@ -1508,14 +1555,37 @@ export class RacingGameEngine {
     if (this.dynamicSky) {
       if (isSingapore) {
         this.dynamicSky.group.visible = false;
+        this.scene.background = this.c3HdrSkyTexture ?? null;
+        this.scene.backgroundIntensity = 1.0;
       } else {
         this.dynamicSky.group.visible = true;
         this.dynamicSky.setNightMode(false);
+        this.scene.background = null;
+        this.scene.backgroundIntensity = 1.0;
       }
-      const envMap = this.dynamicSky.generateEnvironmentMap(this.renderer, false);
-      this.envMapTexture = envMap;
-      this.scene.environment = envMap;
-      this.scene.environmentIntensity = isSingapore ? 1.35 : 1.15;
+      if (isSingapore) {
+        const fallbackEnvMap = this.envMapTexture ?? this.dynamicSky.generateEnvironmentMap(this.renderer, false);
+        this.envMapTexture = fallbackEnvMap;
+        const c3Environment = this.c3HdrEnvironmentTarget?.texture;
+        this.scene.environment = c3Environment ?? fallbackEnvMap;
+        this.scene.environmentIntensity = 0.68;
+        void this.loadC3HdrEnvironment().then((target) => {
+          if (this.isDisposed || this.activeCircuit.id !== 'singapore_marina') return;
+          if (!target) {
+            this.dynamicSky.group.visible = true;
+            return;
+          }
+          this.scene.background = this.c3HdrSkyTexture ?? null;
+          this.scene.backgroundIntensity = 1.0;
+          this.scene.environment = target.texture;
+          this.scene.environmentIntensity = 0.68;
+        });
+      } else {
+        const envMap = this.dynamicSky.generateEnvironmentMap(this.renderer, false);
+        this.envMapTexture = envMap;
+        this.scene.environment = envMap;
+        this.scene.environmentIntensity = 1.15;
+      }
     }
 
     if (this.cinematicOptics) {
@@ -1523,17 +1593,17 @@ export class RacingGameEngine {
     }
 
     if (isSingapore) {
-      // PELAGIC Cinematic Ocean: Crystal-clear golden hour atmosphere
+      // Use a neutral daylight balance derived from C3's partly-cloudy HDR.
       this.scene.fog = new THREE.Fog(0x93abb5, 2500, 9500);
       if (this.hemiLight) {
-        this.hemiLight.color.setHex(0x9ccbd7); // Cool oceanic sky bounce
+        this.hemiLight.color.setHex(0xc5ddf3); // Blue daylight fill, subordinate to HDR IBL
         this.hemiLight.groundColor.setHex(0x06131d); // Deep seabed absorption
-        this.hemiLight.intensity = 0.45;
+        this.hemiLight.intensity = 0.32;
       }
       if (this.dirLight) {
-        this.dirLight.color.setHex(0xffbd86); // Warm golden sun
-        this.dirLight.intensity = 2.6;
-        const sunElevation = 10.5;
+        this.dirLight.color.setHex(0xfff4e5); // Restrained neutral daylight key
+        this.dirLight.intensity = 1.65;
+        const sunElevation = 38.0;
         const sunAzimuth = 157.0;
         const phi = THREE.MathUtils.degToRad(90 - sunElevation);
         const theta = THREE.MathUtils.degToRad(sunAzimuth);
@@ -1542,7 +1612,7 @@ export class RacingGameEngine {
         this.dirLight.target.position.set(0, 0, 0);
       }
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.0;
+      this.renderer.toneMappingExposure = 0.95;
     } else {
       this.scene.fog = new THREE.Fog(0x1a2638, 380, 1250);
       if (this.hemiLight) {
@@ -1733,8 +1803,12 @@ export class RacingGameEngine {
     this.rivalPhysics.steerAngle = interp.steerAngle;
     this.rivalPhysics.slipRatio = interp.slipRatio;
 
-    this.rivalCarModel.group.position.set(interp.x, interp.y, interp.z);
+    const rivalWorldY = interp.y + getCircuitVehicleVisualOffset(this.activeCircuit.id);
+    this.rivalCarModel.group.position.set(interp.x, rivalWorldY, interp.z);
     this.rivalCarModel.group.rotation.set(0, interp.yaw, interp.roll);
+    if (this.rivalCarModel.contactShadowMesh) {
+      this.rivalCarModel.contactShadowMesh.position.y = getCircuitContactShadowLocalY(this.activeCircuit.id, rivalWorldY);
+    }
 
     if (interp.damage) {
       this.rivalPhysics.damage.overallHealth = interp.damage.overallHealth ?? 100;
@@ -1830,6 +1904,16 @@ export class RacingGameEngine {
     if (this.envMapTexture) {
       this.envMapTexture.dispose();
       this.envMapTexture = undefined;
+    }
+    if (this.c3HdrEnvironmentTarget) {
+      if (this.scene.environment === this.c3HdrEnvironmentTarget.texture) this.scene.environment = null;
+      this.c3HdrEnvironmentTarget.dispose();
+      this.c3HdrEnvironmentTarget = undefined;
+    }
+    if (this.c3HdrSkyTexture) {
+      if (this.scene.background === this.c3HdrSkyTexture) this.scene.background = null;
+      this.c3HdrSkyTexture.dispose();
+      this.c3HdrSkyTexture = undefined;
     }
     if (this.scene.environment && typeof (this.scene.environment as any).dispose === 'function') {
       (this.scene.environment as any).dispose();

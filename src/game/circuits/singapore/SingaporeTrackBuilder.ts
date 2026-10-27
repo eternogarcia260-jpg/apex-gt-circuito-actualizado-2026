@@ -9,8 +9,14 @@
 
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { cloneC3AsphaltMap, finishC3AsphaltSurface, finishC3RubberSurface } from './SingaporeAsphaltSurface';
+import { cloneC3AsphaltMap, finishC3AsphaltSurface, finishC3RubberSurface, loadC3AsphaltPBRMaps } from './SingaporeAsphaltSurface';
 import asphaltImg from '../../../assets/images/track_asphalt_detail_1790904767865.jpg';
+import c3RoadAsphaltAlbedo from '../../../assets/textures/c3-asphalt/aerial_asphalt_01_diff_1k.jpg';
+import c3RoadAsphaltNormal from '../../../assets/textures/c3-asphalt/aerial_asphalt_01_nor_gl_1k.jpg';
+import c3RoadAsphaltRoughness from '../../../assets/textures/c3-asphalt/aerial_asphalt_01_rough_1k.jpg';
+import c3WallAsphaltAlbedo from '../../../assets/textures/c3-asphalt/asphalt_02_diff_2k.jpg';
+import c3WallAsphaltNormal from '../../../assets/textures/c3-asphalt/asphalt_02_nor_gl_2k.jpg';
+import c3WallAsphaltRoughness from '../../../assets/textures/c3-asphalt/asphalt_02_rough_2k.jpg';
 import { getAsphaltPBRTextures, getConcretePBRTextures } from '../../utils/TrackPBRTextures';
 import { ITrackWorld } from '../ICircuit';
 import { StaticObstacle, DynamicProp } from '../../world/TrackBuilder';
@@ -24,8 +30,37 @@ import { createC3WaterSurface, type C3WaterSurface } from './SingaporeWaterSurfa
 import { CurvedPitBuildingBuilder } from '../../world/CurvedPitBuildingBuilder';
 import { createSingaporeMaritimeFleet, type SingaporeMaritimeFleet } from './SingaporeMaritimeFleet';
 import { SingaporeFerrisWheel } from './SingaporeFerrisWheel';
+import { SingaporeDutchShip } from './SingaporeDutchShip';
+import { SingaporeGothicStatue } from './SingaporeGothicStatue';
+import { SINGAPORE_TRACK_SURFACE_Y } from './SingaporeTrackSurface';
 const _shadowCenterWorld = new THREE.Vector3();
 const _shadowSphere = new THREE.Sphere();
+
+/** Retile a BoxGeometry's existing UVs by physical face dimensions; positions stay untouched. */
+function tileC3BoxGeometryUvs(geometry: THREE.BufferGeometry, metersPerTile = 3): void {
+  const positions = geometry.getAttribute('position');
+  const uvs = geometry.getAttribute('uv');
+  if (!positions || !uvs || metersPerTile <= 0 || positions.count % 4 !== 0) return;
+  const component = (index: number, axis: number): number =>
+    axis === 0 ? positions.getX(index) : axis === 1 ? positions.getY(index) : positions.getZ(index);
+
+  for (let base = 0; base < positions.count; base += 4) {
+    const min = [Infinity, Infinity, Infinity];
+    const max = [-Infinity, -Infinity, -Infinity];
+    for (let i = base; i < base + 4; i++) for (let axis = 0; axis < 3; axis++) {
+      const value = component(i, axis);
+      min[axis] = Math.min(min[axis], value);
+      max[axis] = Math.max(max[axis], value);
+    }
+    const axes = [0, 1, 2].sort((a, b) => (max[b] - min[b]) - (max[a] - min[a]));
+    const uAxis = axes[0], vAxis = axes[1];
+    for (let i = base; i < base + 4; i++) {
+      uvs.setXY(i, (component(i, uAxis) - min[uAxis]) / metersPerTile,
+        (component(i, vAxis) - min[vAxis]) / metersPerTile);
+    }
+  }
+  uvs.needsUpdate = true;
+}
 
 export class SingaporeTrackBuilder implements ITrackWorld {
   public group: THREE.Group;
@@ -53,6 +88,7 @@ export class SingaporeTrackBuilder implements ITrackWorld {
   private kerbWhiteMat!: THREE.MeshStandardMaterial;
   private concreteBarrierMat!: THREE.MeshStandardMaterial;
   private safetyWallMat!: THREE.MeshStandardMaterial;
+  private asphaltWallMat!: THREE.MeshStandardMaterial;
   private metalDarkMat!: THREE.MeshStandardMaterial;
   private metalSilverMat!: THREE.MeshStandardMaterial;
   private glassMat!: THREE.MeshStandardMaterial;
@@ -61,6 +97,8 @@ export class SingaporeTrackBuilder implements ITrackWorld {
   private waterMat!: THREE.MeshStandardMaterial;
   private maritimeFleet?: SingaporeMaritimeFleet;
   private ferrisWheel?: SingaporeFerrisWheel;
+  private dutchShip?: SingaporeDutchShip;
+  private gothicStatue?: SingaporeGothicStatue;
   private whiteLineMat!: THREE.MeshStandardMaterial;
   private yellowLineMat!: THREE.MeshStandardMaterial;
   private floodlightPoleMat!: THREE.MeshStandardMaterial;
@@ -149,10 +187,11 @@ export class SingaporeTrackBuilder implements ITrackWorld {
     // The boats have their own dynamic poses; do not freeze their radar rigs
     // in the static-node traversal above or override original shadow flags.
     const oceanGeometry = this.waterMesh!.geometry as THREE.PlaneGeometry;
-    this.maritimeFleet = createSingaporeMaritimeFleet(this.waterMesh!.position.y, {
+    const oceanGrid = {
       width: oceanGeometry.parameters.width, depth: oceanGeometry.parameters.height,
       segmentsX: oceanGeometry.parameters.widthSegments, segmentsZ: oceanGeometry.parameters.heightSegments,
-    });
+    };
+    this.maritimeFleet = createSingaporeMaritimeFleet(this.waterMesh!.position.y, oceanGrid);
     this.group.add(this.maritimeFleet.root);
     this.maritimeFleet.root.updateMatrixWorld(true);
     this.maritimeFleet.root.traverse(object => {
@@ -170,6 +209,20 @@ export class SingaporeTrackBuilder implements ITrackWorld {
       if (object instanceof THREE.Mesh && object.castShadow && !object.userData.c3NoShadow) this.shadowCasterMeshes.push(object);
     });
     this.group.userData.c3FerrisWheel = this.ferrisWheel.diagnostics;
+
+    // C3-only imported hero vessel. Keep it after the established fleet and wheel
+    // so their construction order, procedural seeds and shadow setup stay intact.
+    this.dutchShip = new SingaporeDutchShip(this.waterMesh!.position.y, oceanGrid);
+    this.group.add(this.dutchShip.root);
+    this.group.userData.c3DutchShip = this.dutchShip.diagnostics;
+
+    // C3-only imported Gothic statue. It is appended after the established
+    // scenery and never participates in the seeded/static construction sweep.
+    this.gothicStatue = new SingaporeGothicStatue(meshes => {
+      for (const mesh of meshes) this.shadowCasterMeshes.push(mesh);
+    });
+    this.group.add(this.gothicStatue.root);
+    this.group.userData.c3GothicStatue = this.gothicStatue.diagnostics;
   }
 
   private initMaterials(): void {
@@ -201,6 +254,15 @@ export class SingaporeTrackBuilder implements ITrackWorld {
     });
 
     finishC3AsphaltSurface(this.asphaltMat);
+    loadC3AsphaltPBRMaps(this.asphaltMat, {
+      albedo: c3RoadAsphaltAlbedo,
+      normal: c3RoadAsphaltNormal,
+      roughness: c3RoadAsphaltRoughness,
+    }, () => this.disposed, {
+      label: 'aerial_asphalt_01_1k',
+      repeat: [2, 2],
+      normalScale: 0.85,
+    });
 
     // 2. High-contrast rubber groove
     this.rubberGrooveMat = new THREE.MeshStandardMaterial({
@@ -256,6 +318,24 @@ export class SingaporeTrackBuilder implements ITrackWorld {
     this.safetyWallMat.normalMap = concretePBR.normal.clone();
     this.safetyWallMat.roughnessMap = concretePBR.roughness.clone();
     this.safetyWallMat.normalScale.set(0.14, 0.14);
+
+    // Track and pit safety barriers use the asphalt set that was previously on the road.
+    // Keep the separate concrete material for the garage architecture and quay structure.
+    this.asphaltWallMat = new THREE.MeshStandardMaterial({
+      name: 'C3_AsphaltPBRSafetyWalls',
+      color: 0xa2a7ad,
+      roughness: 0.96,
+      metalness: 0,
+    });
+    loadC3AsphaltPBRMaps(this.asphaltWallMat, {
+      albedo: c3WallAsphaltAlbedo,
+      normal: c3WallAsphaltNormal,
+      roughness: c3WallAsphaltRoughness,
+    }, () => this.disposed, {
+      label: 'asphalt_02_2k_walls',
+      repeat: [1, 1],
+      normalScale: 0.45,
+    });
 
     // SkyPark's elevated pool remains independent from the sea-level planar reflection.
     this.waterMat = new THREE.MeshStandardMaterial({ name: 'C3_SkyParkPoolWater', color: 0x0b171b, roughness: 0.36, metalness: 0 });
@@ -431,8 +511,8 @@ export class SingaporeTrackBuilder implements ITrackWorld {
       seaLevel: water.position.y,
       width: 1900,
       depth: 1500,
-      trackSurfaceY: 0.02,
-      clearanceBelowTrack: 0.02 - water.position.y,
+      trackSurfaceY: SINGAPORE_TRACK_SURFACE_Y,
+      clearanceBelowTrack: SINGAPORE_TRACK_SURFACE_Y - water.position.y,
       continuous: true,
       visualMarginMetres: 100,
     };
@@ -468,10 +548,10 @@ export class SingaporeTrackBuilder implements ITrackWorld {
       const normZ = dx / len;
 
       const dist = i === numPts ? lapV : (p.accumulatedDistance ?? i * 7.5) * uvPerMetre;
-      vertices.push(p.x - normX * halfW, 0.02, p.z - normZ * halfW);
+      vertices.push(p.x - normX * halfW, SINGAPORE_TRACK_SURFACE_Y, p.z - normZ * halfW);
       uvs.push(0, dist);
 
-      vertices.push(p.x + normX * halfW, 0.02, p.z + normZ * halfW);
+      vertices.push(p.x + normX * halfW, SINGAPORE_TRACK_SURFACE_Y, p.z + normZ * halfW);
       uvs.push(1, dist);
 
       if (i < numPts) {
@@ -770,7 +850,8 @@ export class SingaporeTrackBuilder implements ITrackWorld {
     // =========================================================================
     const pitWallLength = 150;
     const pitWallGeo = new THREE.BoxGeometry(0.9, 1.25, pitWallLength);
-    const pitWall = new THREE.Mesh(pitWallGeo, this.concreteBarrierMat);
+    tileC3BoxGeometryUvs(pitWallGeo);
+    const pitWall = new THREE.Mesh(pitWallGeo, this.asphaltWallMat);
     pitWall.name = 'C3_PitWall';
     pitWall.position.set(-8.2, 0.625, 0);
     pitGroup.add(pitWall);
@@ -1128,7 +1209,7 @@ export class SingaporeTrackBuilder implements ITrackWorld {
 
   private buildDoubleSidedSafetyBarriers(): void {
     const strip = buildC3SafetyStrip(SINGAPORE_WAYPOINTS);
-    const walls = new THREE.Mesh(strip.walls, this.safetyWallMat);
+    const walls = new THREE.Mesh(strip.walls, this.asphaltWallMat);
     walls.name = 'C3_ContinuousSafetyWalls';
     this.group.add(walls);
     for (const {p1, p2} of strip.segments) {
@@ -1161,7 +1242,8 @@ export class SingaporeTrackBuilder implements ITrackWorld {
 
     // 1. Long Outer Longitudinal Barrier (X = -39.0, Z: -135 to +135)
     const longWallGeo = new THREE.BoxGeometry(wallThick, wallHeight, wallLen);
-    const longWall = new THREE.Mesh(longWallGeo, this.safetyWallMat);
+    tileC3BoxGeometryUvs(longWallGeo);
+    const longWall = new THREE.Mesh(longWallGeo, this.asphaltWallMat);
     longWall.position.set(outerX, wallHeight / 2, (zMin + zMax) / 2);
     perimeterGroup.add(longWall);
 
@@ -1170,7 +1252,8 @@ export class SingaporeTrackBuilder implements ITrackWorld {
     const rampOuterX = -11.5;
     const southLen = Math.abs(outerX - rampOuterX);
     const southWallGeo = new THREE.BoxGeometry(southLen, wallHeight, wallThick);
-    const southWall = new THREE.Mesh(southWallGeo, this.safetyWallMat);
+    tileC3BoxGeometryUvs(southWallGeo);
+    const southWall = new THREE.Mesh(southWallGeo, this.asphaltWallMat);
     southWall.position.set((rampOuterX + outerX) / 2, wallHeight / 2, zMin);
     perimeterGroup.add(southWall);
 
@@ -1178,7 +1261,8 @@ export class SingaporeTrackBuilder implements ITrackWorld {
     // Leaves pit exit acceleration ramp (X: -7.0 to -11.5) wide open for track merge
     const northLen = Math.abs(outerX - rampOuterX);
     const northWallGeo = new THREE.BoxGeometry(northLen, wallHeight, wallThick);
-    const northWall = new THREE.Mesh(northWallGeo, this.safetyWallMat);
+    tileC3BoxGeometryUvs(northWallGeo);
+    const northWall = new THREE.Mesh(northWallGeo, this.asphaltWallMat);
     northWall.position.set((rampOuterX + outerX) / 2, wallHeight / 2, zMax);
     perimeterGroup.add(northWall);
 
@@ -1194,8 +1278,11 @@ export class SingaporeTrackBuilder implements ITrackWorld {
     ], false, 'centripetal');
     const rightExitPoints = rightExitCurve.getPoints(64);
     const rightExitPositions: number[] = [];
+    const rightExitUvs: number[] = [];
     const rightExitIndices: number[] = [];
+    let rightExitDistance = 0;
     for (let i = 0; i < rightExitPoints.length; i++) {
+      if (i > 0) rightExitDistance += rightExitPoints[i].distanceTo(rightExitPoints[i - 1]);
       const before = rightExitPoints[Math.max(0, i - 1)];
       const after = rightExitPoints[Math.min(rightExitPoints.length - 1, i + 1)];
       const tangent = after.clone().sub(before).normalize();
@@ -1206,6 +1293,9 @@ export class SingaporeTrackBuilder implements ITrackWorld {
         left.x, 0, left.z, left.x, wallHeight, left.z,
         right.x, 0, right.z, right.x, wallHeight, right.z,
       );
+      const u = rightExitDistance / 3;
+      const across = wallThick / 3;
+      rightExitUvs.push(u, 0, u, wallHeight / 3, u + across, 0, u + across, wallHeight / 3);
       if (i === 0) continue;
       const current = i * 4;
       const previous = current - 4;
@@ -1226,11 +1316,12 @@ export class SingaporeTrackBuilder implements ITrackWorld {
     );
     const rightExitGeo = new THREE.BufferGeometry();
     rightExitGeo.setAttribute('position', new THREE.Float32BufferAttribute(rightExitPositions, 3));
+    rightExitGeo.setAttribute('uv', new THREE.Float32BufferAttribute(rightExitUvs, 2));
     rightExitGeo.setIndex(rightExitIndices);
     rightExitGeo.computeVertexNormals();
     rightExitGeo.computeBoundingBox();
     rightExitGeo.computeBoundingSphere();
-    const rightExitWall = new THREE.Mesh(rightExitGeo, this.safetyWallMat);
+    const rightExitWall = new THREE.Mesh(rightExitGeo, this.asphaltWallMat);
     rightExitWall.name = 'C3_PitExitRightCurvedBarrier';
     perimeterGroup.add(rightExitWall);
 
@@ -1418,6 +1509,7 @@ export class SingaporeTrackBuilder implements ITrackWorld {
     this.waterSurface?.update(dt);
     const oceanMaterial = this.waterSurface?.mesh.material as THREE.ShaderMaterial | undefined;
     this.maritimeFleet?.update(dt, oceanMaterial?.uniforms.time.value, oceanMaterial?.uniforms.uWaveStrength.value);
+    this.dutchShip?.update(dt, oceanMaterial?.uniforms.time.value, oceanMaterial?.uniforms.uWaveStrength.value);
     this.ferrisWheel?.update(dt);
     if (!this.ferrisWheelRimGroup) return;
     this.ferrisWheelRimGroup.rotation.z = (this.ferrisWheelRimGroup.rotation.z + 0.04 * Math.min(dt, 0.1)) % (Math.PI * 2);
@@ -1469,6 +1561,10 @@ export class SingaporeTrackBuilder implements ITrackWorld {
     // disposal of shared boat materials / textures / BatchedMesh buffers.
     this.maritimeFleet?.dispose();
     this.maritimeFleet = undefined;
+    this.dutchShip?.dispose();
+    this.dutchShip = undefined;
+    this.gothicStatue?.dispose();
+    this.gothicStatue = undefined;
     // The landmark owns its instance buffers and packed transparent geometry.
     this.ferrisWheel?.dispose();
     this.ferrisWheel = undefined;
@@ -1489,8 +1585,8 @@ export class SingaporeTrackBuilder implements ITrackWorld {
         }
       }
     });
-    // All C3 map assignments are instance-owned clones; cached PBR originals
-    // remain alive for other circuits. Deduplicate shared resources per disposal.
+    // All C3 maps are track-owned; cached PBR originals remain alive for other
+    // circuits. Deduplicate shared resources per disposal.
     for (const texture of textures) texture.dispose();
     for (const material of materials) material.dispose();
     for (const geometry of geometries) geometry.dispose();

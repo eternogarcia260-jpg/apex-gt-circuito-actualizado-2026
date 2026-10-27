@@ -21,6 +21,7 @@ import {
   formatF1TimeGap,
 } from '../career/CircuitWaypoints';
 import { ICircuitDefinition } from '../circuits/ICircuit';
+import { getCircuitContactShadowLocalY, getCircuitVehicleVisualOffset } from '../circuits/singapore/SingaporeTrackSurface';
 
 export type { SplinePoint };
 
@@ -289,7 +290,7 @@ export class AICarController {
     this.targetLateralOffset = this.initialLaneOffset;
 
     this.position.set(gridX, 0.35, gridZ);
-    this.carModel.group.position.copy(this.position);
+    this.carModel.group.position.set(gridX, 0.35 + getCircuitVehicleVisualOffset(this.activeCircuit?.id), gridZ);
     this.carModel.group.rotation.set(0, gridYaw, 0);
 
     const startProgressX = gridX - (-92.0);
@@ -1205,11 +1206,12 @@ export class AICarController {
     const roll = THREE.MathUtils.lerp(this.physics.prevRoll, this.physics.roll, clampedAlpha);
 
     this.position.set(x, y, z);
-    this.carModel.group.position.set(x, y, z);
+    const vehicleWorldY = y + getCircuitVehicleVisualOffset(this.activeCircuit?.id);
+    this.carModel.group.position.set(x, vehicleWorldY, z);
     this.carModel.group.rotation.set(0, yaw, roll);
     if (this.carModel.contactShadowMesh) {
       this.carModel.contactShadowMesh.rotation.z = -roll;
-      this.carModel.contactShadowMesh.position.y = -y + 0.008;
+      this.carModel.contactShadowMesh.position.y = getCircuitContactShadowLocalY(this.activeCircuit?.id, vehicleWorldY);
     }
 
     const speedKmh = Math.abs(this.physics.speed) * 3.6;
